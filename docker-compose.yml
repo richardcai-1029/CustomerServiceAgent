@@ -1,0 +1,46 @@
+# Start everything with:  docker compose up -d --build
+# Requires a .env file with DASHSCOPE_API_KEY (copy .env.example).
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: cs_agent
+      MYSQL_USER: cs_agent
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-cs_agent_pw}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-root_pw}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # TCP ping: fails while the image's temporary init server (no networking) runs.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+
+  app:
+    build: .
+    image: cs-agent:latest
+    env_file: .env
+    environment:
+      # Overrides DATABASE_URL from .env, which points at a local MySQL.
+      DATABASE_URL: mysql+pymysql://cs_agent:${MYSQL_PASSWORD:-cs_agent_pw}@mysql:3306/cs_agent
+    ports:
+      - "8000:8000"
+    volumes:
+      # Vector store, ingest manifest and conversation checkpoints survive restarts.
+      - app-runtime:/app/data/runtime
+      # Edit the knowledge base without rebuilding; changes are indexed on restart
+      # or via POST /api/admin/reindex.
+      - ./data/docs:/app/data/docs:ro
+      - ./data/faq.yaml:/app/data/faq.yaml:ro
+    depends_on:
+      mysql:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  mysql-data:
+  app-runtime:

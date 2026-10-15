@@ -55,6 +55,26 @@ Other commands:
 
 To use DeepSeek for chat, set `LLM_PROVIDER=deepseek` and `DEEPSEEK_API_KEY` in `.env`. Embeddings and rerank still use DashScope.
 
+## Run with Docker
+
+The Compose stack runs the app and its own MySQL; no local Python or MySQL is needed. Create `.env` with `DASHSCOPE_API_KEY` as above, then:
+
+```bash
+docker compose up -d --build
+```
+
+Open http://localhost:8000 once `docker compose ps` shows the app as `healthy`. The first start seeds the database and indexes `data/docs/`.
+
+| Command | Purpose |
+|---|---|
+| `docker compose logs -f app` | Follow the app logs (simulated SMS codes are logged here) |
+| `docker compose exec app cs-agent reset-db` | Reset the demo data |
+| `docker compose exec app cs-agent ingest` | Re-index after editing `data/docs/` (mounted read-only, so no rebuild is needed) |
+| `docker compose down` | Stop; MySQL data, the vector store and conversations are kept in volumes |
+| `docker compose down -v` | Stop and delete all data |
+
+`DATABASE_URL` from `.env` is overridden to point at the `mysql` container. Set `MYSQL_PASSWORD` / `MYSQL_ROOT_PASSWORD` in your shell or `.env` to change the default database passwords. Containers run in UTC, so times in replies are shown in UTC.
+
 ## Demo accounts
 
 In dev mode the SMS code is always `123456`. Only these seeded phone numbers have accounts; any other number receives a code but cannot sign in.
@@ -87,4 +107,5 @@ src/cs_agent/
 data/           faq.yaml · docs/ (knowledge-base sources) · runtime/ (Chroma, conversation checkpoints; git-ignored)
 scripts/        make_sample_pdfs.py · e2e_conversations.py
 tests/          services / auth / knowledge / graph / API
+Dockerfile · docker-compose.yml · .dockerignore
 ```
