@@ -1,3 +1,5 @@
+import os
+
 import pytest
 
 from cs_agent.config import Settings
@@ -17,10 +19,15 @@ def settings(tmp_path) -> Settings:
     )
 
 
+# Set TEST_DATABASE_URL (e.g. mysql+pymysql://root@127.0.0.1:3306/cs_agent_test)
+# to run the suite against MySQL instead of in-memory SQLite.
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL", "sqlite:///:memory:")
+
+
 @pytest.fixture
 def session_factory(settings):
-    engine = make_engine("sqlite:///:memory:")
-    create_schema(engine)
+    engine = make_engine(TEST_DATABASE_URL)
+    create_schema(engine, drop_first=True)
     factory = make_session_factory(engine)
     with session_scope(factory) as s:
         seed(s)

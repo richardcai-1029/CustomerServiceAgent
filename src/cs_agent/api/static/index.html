@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NovaTech Support</title>
+  <link rel="stylesheet" href="/static/style.css?v=2">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">N</span>
+      <div>
+        <div class="brand-name">NovaTech Support</div>
+        <div class="brand-sub">Nova · virtual assistant</div>
+      </div>
+    </div>
+    <button id="new-chat" class="ghost">New conversation</button>
+  </header>
+
+  <main class="layout">
+    <section class="chat" aria-label="Conversation">
+      <div id="messages" class="messages" aria-live="polite"></div>
+      <div id="activity" class="activity" hidden><span class="spinner"></span><span id="activity-text"></span></div>
+      <form id="composer" class="composer">
+        <textarea id="input" rows="1" maxlength="2000" placeholder="Type your message…" autocomplete="off"></textarea>
+        <button id="send" type="submit" class="primary">Send</button>
+      </form>
+    </section>
+
+    <aside class="side">
+      <div class="card" id="account-card">
+        <h2>Your account</h2>
+        <div id="logged-out">
+          <p class="muted">Sign in to check orders, refunds and appointments. You can also verify inside the chat.</p>
+          <label for="phone">Phone number</label>
+          <div class="row">
+            <input id="phone" inputmode="tel" placeholder="415 555 0101" autocomplete="tel">
+            <button id="send-code" class="secondary" type="button">Send code</button>
+          </div>
+          <div id="code-row" hidden>
+            <label for="code">Verification code</label>
+            <div class="row">
+              <input id="code" inputmode="numeric" maxlength="6" placeholder="6 digits" autocomplete="one-time-code">
+              <button id="login" class="primary" type="button">Sign in</button>
+            </div>
+          </div>
+          <p id="auth-msg" class="hint" role="status"></p>
+        </div>
+        <div id="logged-in" hidden>
+          <p>Signed in as <strong id="who"></strong></p>
+          <p class="muted" id="who-phone"></p>
+          <button id="logout" class="ghost" type="button">Sign out</button>
+        </div>
+      </div>
+
+      <div class="card" id="demo-card" hidden>
+        <h2>Demo accounts</h2>
+        <p class="muted">Dev mode: the SMS code is always <code id="dev-code"></code>.</p>
+        <ul id="demo-list" class="demo-list"></ul>
+      </div>
+    </aside>
+  </main>
+
+  <template id="confirm-template">
+    <div class="confirm">
+      <div class="confirm-title"></div>
+      <dl class="confirm-details"></dl>
+      <div class="confirm-actions">
+        <button class="primary" data-approve="true">Confirm</button>
+        <button class="ghost" data-approve="false">Cancel</button>
+      </div>
+    </div>
+  </template>
+
+  <script src="/static/app.js?v=2"></script>
+</body>
+</html>

@@ -1,7 +1,7 @@
 [project]
 name = "cs-agent"
 version = "0.1.0"
-description = "Add your description here"
+description = "LangChain/LangGraph customer service agent for a demo electronics store"
 authors = [
     { name = "caijicheng", email = "richardcai1029@gmail.com" }
 ]
@@ -27,6 +27,13 @@ dependencies = [
     "sqlalchemy>=2.0",
     "uvicorn[standard]>=0.54.0",
 ]
+
+[project.scripts]
+cs-agent = "cs_agent.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
 
 [build-system]
 requires = ["uv_build>=0.12.4,<0.13.0"]

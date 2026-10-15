@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     otp_ttl_seconds: int = 300
     otp_max_attempts: int = 5
     otp_resend_seconds: int = 60
+    # Required for POST /api/admin/reindex outside dev mode.
+    admin_token: str = ""
 
     # --- Business rules ---
     return_window_days: int = 7
