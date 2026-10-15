@@ -105,6 +105,15 @@ def make_tools(deps: AgentDeps) -> list[BaseTool]:
         try:
             with db() as s:
                 sent = otp.send_code(s, settings, phone)
+        except otp.ResendTooSoon as exc:
+            # The earlier code is still valid: wait for it instead of failing.
+            return Command(update={
+                "pending_phone": exc.phone,
+                "messages": [ToolMessage(
+                    "A code was already sent to this number less than a minute ago and is "
+                    "still valid. Ask the customer to reply with that code.",
+                    tool_call_id=runtime.tool_call_id)],
+            })
         except BusinessError as exc:
             return f"ERROR: {exc}"
         text = (f"If {sent['sent_to']} is registered, a code was sent. It expires in "
@@ -292,12 +301,17 @@ def make_tools(deps: AgentDeps) -> list[BaseTool]:
 
     @tool
     def start_return_request(runtime: ToolRuntime, order_id: str | None = None,
+                             item_description: str | None = None,
                              reason: str | None = None) -> Command | str:
-        """Start the guided return & refund form for delivered items. Pass the order number
-        and the customer's reason if they already mentioned them."""
+        """Open the guided return & refund form. Call it as soon as a verified customer wants
+        to return an item or get a refund for a delivered item, even if you don't know the
+        order yet: the form lists the eligible orders itself. Pass what the customer already
+        said: order number, which item (e.g. "the charger") and the reason, else leave empty."""
         if not runtime.state.get("user_id"):
             return AUTH_REQUIRED
-        draft = {"started": False, "order_id": order_id, "initial_reason_text": reason}
+        hint = "; ".join(f"{label}: {value}" for label, value in
+                         (("items", item_description), ("reason", reason)) if value)
+        draft = {"started": False, "order_id": order_id, "hint": hint or None}
         return Command(update={
             "active_flow": "return",
             "return_draft": draft,

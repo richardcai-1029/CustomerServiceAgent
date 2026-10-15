@@ -55,3 +55,10 @@ def test_jwt_roundtrip(settings):
     assert tokens.decode_token(settings, token) == 3
     with pytest.raises(tokens.InvalidToken):
         tokens.decode_token(settings, token + "x")
+
+
+def test_new_code_allowed_right_after_previous_one_was_used(db, settings):
+    otp.send_code(db, settings, "4155550101")
+    assert otp.verify_code(db, settings, "4155550101", "123456").ok
+    otp.send_code(db, settings, "4155550101")  # no rate-limit error
+    assert otp.verify_code(db, settings, "4155550101", "123456").ok

@@ -72,12 +72,11 @@ def make_return_nodes(deps: AgentDeps):
                              "Is there anything else I can help you with?")
             if slots.off_topic:
                 # Leave the form and let the agent handle the new request.
-                return Command(goto="agent", update={"active_flow": None, "return_draft": None})
+                return Command(goto="agent", update={"active_flow": None, "return_draft": None,
+                                                     "needs_knowledge": False})
             _apply(draft, slots, notes)
         else:
             draft["started"] = True
-            if text := draft.pop("initial_reason_text", None):
-                _apply(draft, deps.extract_return_slots("reason", [], text), notes)
 
         with db() as s:
             # 1. Order
@@ -108,6 +107,14 @@ def make_return_nodes(deps: AgentDeps):
                     return _ask(draft, "which order to return items from", options,
                                 notes + ["Which order would you like to return items from?",
                                          *_numbered(options)])
+
+            # Details the customer gave before the form opened ("the charger, it's broken").
+            if hint := draft.pop("hint", None):
+                options = [{"item_id": i.id, "label": i.product_name} for i in order.items]
+                slots = deps.extract_return_slots("details mentioned before the form opened",
+                                                  options, hint)
+                slots.order_id = None  # the order is settled above
+                _apply(draft, slots, notes)
 
             # 2. Items
             valid = {i.id for i in order.items}

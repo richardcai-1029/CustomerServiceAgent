@@ -16,7 +16,7 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import Any
 
-from langchain_core.messages import AIMessage, BaseMessageChunk, ToolMessage
+from langchain_core.messages import AIMessage, ToolMessage
 
 from cs_agent.agent.classifiers import INTERNAL_TAG
 
@@ -52,10 +52,11 @@ async def stream_turn(graph, payload: Any, config: dict) -> AsyncIterator[Event]
     async for mode, chunk in graph.astream(payload, config, stream_mode=["messages", "updates"]):
         if mode == "messages":
             message, meta = chunk
+            # AIMessageChunk subclasses AIMessage: this matches streamed chunks and
+            # whole messages from non-streaming models alike.
             if (meta.get("langgraph_node") == "agent"
                     and INTERNAL_TAG not in (meta.get("tags") or [])
-                    and isinstance(message, (AIMessage, BaseMessageChunk))
-                    and message.type.startswith("ai")):
+                    and isinstance(message, AIMessage)):
                 text = str(message.text)
                 if text:
                     yield Event("token", {"text": text})

@@ -2,9 +2,9 @@
 
     START ─┬─ (awaiting SMS code & reply is a code) ─▶ otp_gate ─▶ agent | END
            ├─ (return form in progress) ─────────────▶ returns_flow
-           └─ otherwise ─▶ faq_match ∥ emotion ─▶ decide ─┬─▶ handoff
-                                                         ├─▶ faq_answer
-                                                         └─▶ agent ◀─▶ tools
+           └─ otherwise ─▶ faq_match ∥ classify ─▶ decide ─┬─▶ handoff
+                                                          ├─▶ faq_answer
+                                                          └─▶ agent ◀─▶ tools
     tools ─▶ returns_flow (form started) | handoff (repeated misses) | agent
     returns_flow ─▶ returns_confirm (all slots filled) | agent (off-topic) | END
 """
@@ -29,14 +29,37 @@ from cs_agent.services.common import mask_phone
 
 # A reply that is just a 6-digit code, optionally with a few words around it.
 OTP_REPLY_RE = re.compile(r"^\D{0,25}(\d{6})\D{0,10}$")
+# A reply that is essentially a US phone number ("415-555-0101", "my phone is (415) 555 0101").
+PHONE_REPLY_RE = re.compile(r"^\D{0,30}(?:\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\D{0,15}$")
 MAX_HISTORY_MESSAGES = 40
+# Tools the agent can be forced to call first (via tool_choice) when a turn clearly needs them.
+FORCEABLE_TOOLS = ("search_knowledge_base", "send_verification_code")
+
+
+def forced_tool(state: CSState) -> str | None:
+    """Pick a tool the first model call of this turn must make, if any.
+
+    Prompts alone proved unreliable: the model sometimes answered product questions
+    from its own (wrong) knowledge, or skipped verification. Forcing the call makes
+    grounding and verification structural.
+    """
+    last = state["messages"][-1]
+    if last.type != "human":
+        return None  # a later model call within the turn (after a tool ran)
+    if not state.get("user_id") and PHONE_REPLY_RE.match(str(last.text).strip()):
+        return "send_verification_code"
+    if state.get("needs_knowledge"):
+        return "search_knowledge_base"
+    return None
 
 
 def build_graph(deps: AgentDeps, checkpointer: Checkpointer = None):
     settings = deps.settings
     tools = make_tools(deps)
     bind_kwargs = {"parallel_tool_calls": False} if settings.llm_provider == "qwen" else {}
-    model = deps.chat_model.bind_tools(tools, **bind_kwargs)
+    models = {None: deps.chat_model.bind_tools(tools, **bind_kwargs)}
+    for name in FORCEABLE_TOOLS:
+        models[name] = deps.chat_model.bind_tools(tools, tool_choice=name, **bind_kwargs)
     returns_flow, returns_confirm = make_return_nodes(deps)
 
     def db():
@@ -50,7 +73,7 @@ def build_graph(deps: AgentDeps, checkpointer: Checkpointer = None):
             return "otp_gate"
         if state.get("active_flow") == "return":
             return "returns_flow"
-        return ["faq_match", "emotion"]
+        return ["faq_match", "classify"]
 
     def route_decide(state: CSState) -> str:
         if (state.get("wants_human")
@@ -88,17 +111,18 @@ def build_graph(deps: AgentDeps, checkpointer: Checkpointer = None):
         if not result.ok:
             return {"messages": [redacted, AIMessage(result.error)]}
         return {"messages": [redacted], "user_id": result.customer_id,
-                "user_name": result.customer_name, "pending_phone": None}
+                "user_name": result.customer_name, "pending_phone": None,
+                "needs_knowledge": False}
 
     def faq_match(state: CSState) -> dict:
         hit = deps.faq.match(last_human_text(state))
         return {"faq_hit": asdict(hit) if hit else None}
 
-    def emotion(state: CSState) -> dict:
-        result = deps.classify_emotion(state["messages"])
-        streak = state.get("angry_streak", 0) + 1 if result.emotion == "angry" else 0
-        return {"emotion": result.emotion, "wants_human": result.wants_human,
-                "angry_streak": streak}
+    def classify(state: CSState) -> dict:
+        signals = deps.classify_turn(state["messages"])
+        streak = state.get("angry_streak", 0) + 1 if signals.emotion == "angry" else 0
+        return {"emotion": signals.emotion, "wants_human": signals.wants_human,
+                "needs_knowledge": signals.needs_knowledge, "angry_streak": streak}
 
     def decide(state: CSState) -> dict:
         return {}
@@ -115,12 +139,13 @@ def build_graph(deps: AgentDeps, checkpointer: Checkpointer = None):
             auth = (f"Not verified yet. A code was sent to {mask_phone(state['pending_phone'])}; "
                     "the customer should reply with it.")
         else:
-            auth = "Not verified. Only general questions can be answered until they verify."
+            auth = ("NOT verified. Account tools will fail until the customer verifies "
+                    "(see 'Account requests').")
         system = AGENT_SYSTEM.format(today=today(), auth_status=auth,
                                      tone=TONES.get(state.get("emotion", "calm"), TONES["calm"]))
         history = trim_messages(state["messages"], strategy="last", token_counter=len,
                                 max_tokens=MAX_HISTORY_MESSAGES, start_on="human")
-        response = model.invoke([SystemMessage(system), *history])
+        response = models[forced_tool(state)].invoke([SystemMessage(system), *history])
         return {"messages": [_single_confirmation(response)]}
 
     def handoff_node(state: CSState) -> dict:
@@ -154,7 +179,7 @@ def build_graph(deps: AgentDeps, checkpointer: Checkpointer = None):
     builder = StateGraph(CSState)
     builder.add_node("otp_gate", otp_gate)
     builder.add_node("faq_match", faq_match)
-    builder.add_node("emotion", emotion)
+    builder.add_node("classify", classify)
     builder.add_node("decide", decide)
     builder.add_node("faq_answer", faq_answer)
     builder.add_node("handoff", handoff_node)
@@ -165,9 +190,9 @@ def build_graph(deps: AgentDeps, checkpointer: Checkpointer = None):
     builder.add_node("returns_confirm", returns_confirm)
 
     builder.add_conditional_edges(START, route_start,
-                                  ["otp_gate", "returns_flow", "faq_match", "emotion"])
+                                  ["otp_gate", "returns_flow", "faq_match", "classify"])
     builder.add_conditional_edges("otp_gate", route_otp, ["agent", END])
-    builder.add_edge(["faq_match", "emotion"], "decide")
+    builder.add_edge(["faq_match", "classify"], "decide")
     builder.add_conditional_edges("decide", route_decide, ["handoff", "faq_answer", "agent"])
     builder.add_conditional_edges("agent", route_agent, ["tools", END])
     builder.add_conditional_edges("tools", route_tools, ["returns_flow", "handoff", "agent"])

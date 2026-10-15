@@ -25,6 +25,7 @@ class CSState(TypedDict):
     faq_hit: NotRequired[dict | None]
     emotion: NotRequired[str]
     wants_human: NotRequired[bool]
+    needs_knowledge: NotRequired[bool]
     angry_streak: NotRequired[int]
     unresolved_count: NotRequired[int]  # consecutive knowledge-base misses
     handoff_ticket: NotRequired[str | None]
@@ -42,8 +43,8 @@ class AgentDeps:
     chat_model: BaseChatModel
     faq: FAQMatcher
     retriever: KnowledgeRetriever | None
-    # messages -> EmotionResult
-    classify_emotion: Callable[[list[AnyMessage]], Any]
+    # messages -> TurnSignals
+    classify_turn: Callable[[list[AnyMessage]], Any]
     # (awaiting, options, reply) -> ReturnSlots
     extract_return_slots: Callable[[str, list[dict], str], Any]
 

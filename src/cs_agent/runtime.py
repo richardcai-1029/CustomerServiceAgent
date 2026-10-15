@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from sqlalchemy import inspect
 from sqlalchemy.engine import Engine
 
-from cs_agent.agent.classifiers import make_emotion_classifier, make_return_slot_extractor
+from cs_agent.agent.classifiers import make_return_slot_extractor, make_turn_classifier
 from cs_agent.agent.state import AgentDeps
 from cs_agent.config import Settings
 from cs_agent.db.models import Customer
@@ -68,7 +68,7 @@ def build_runtime(settings: Settings, *, sync_docs: bool = True) -> Runtime:
                                  token_coverage=settings.faq_token_coverage,
                                  embedding_threshold=settings.faq_embedding_threshold),
         retriever=KnowledgeRetriever(store, settings, reranker),
-        classify_emotion=make_emotion_classifier(
+        classify_turn=make_turn_classifier(
             make_chat_model(settings, model=settings.emotion_model_name, temperature=0)),
         extract_return_slots=make_return_slot_extractor(make_chat_model(settings, temperature=0)),
     )

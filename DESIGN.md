@@ -1,77 +1,88 @@
-# 智能客服 Agent 设计说明
+# Customer Service Agent: Design
 
-本文档记录项目启动前与需求方逐项确认的设计决策。代码、注释、知识库内容、UI 与 Agent 回复均为英文；文档为中文。
+This document records the design decisions agreed with the stakeholder before implementation, updated with what changed after testing against the real LLM. Everything in the project is in English: code, comments, knowledge base, UI, agent replies and documentation.
 
-## 1. 定位
+## 1. Scope
 
-- 学习 / 作品集项目：架构清晰、可演示，业务后端通过服务层隔离，便于日后替换。
-- 业务场景：虚构数码电商 **NovaTech Store**（耳机、智能手表、笔记本、平板、配件）。
-- 语言：全部英文。用户即使用中文提问，Agent 也用英文回复。
+- A learning / portfolio project: a clear architecture that is easy to demo. The business backend sits behind a service layer so it can be replaced later.
+- Domain: **NovaTech Store**, a fictional consumer-electronics retailer (headphones, smartwatches, laptops, tablets, accessories).
+- Language: English only. If a customer writes in another language, the agent still replies in English.
 
-## 2. 技术栈
+## 2. Tech stack
 
-| 层 | 选型 |
+| Layer | Choice |
 |---|---|
-| 运行时 | Python 3.12，`uv`，`src/cs_agent/` 布局 |
-| 编排 | LangChain v1 + LangGraph v1（自建 StateGraph） |
-| 主 LLM | 默认 `qwen-plus`（DashScope OpenAI 兼容接口），环境变量可切换 DeepSeek |
-| 情绪分类 | `qwen-turbo`（结构化输出） |
-| Embedding / Rerank | `text-embedding-v4` / `gte-rerank-v2`（可开关） |
-| 业务库 | MySQL（Homebrew），SQLAlchemy 2.x + PyMySQL；单测用 SQLite 内存库 |
-| 向量库 | Chroma（本地持久化，cosine） |
-| 会话记忆 | LangGraph SQLite checkpointer |
-| 接口 | FastAPI + SSE + 原生 HTML/JS 单页；另有 CLI |
-| 可观测 | LangSmith，仅环境变量开关 |
+| Runtime | Python 3.12, `uv`, `src/cs_agent/` layout |
+| Orchestration | LangChain v1 + LangGraph v1 (hand-built `StateGraph`) |
+| Main LLM | `qwen-plus` by default (DashScope OpenAI-compatible endpoint); DeepSeek via environment variables |
+| Turn classifier | `qwen-flash` (structured output). `qwen-turbo` was the original choice but is rate-limited on new accounts |
+| Embeddings / rerank | `text-embedding-v4` / `gte-rerank-v2` (rerank can be switched off) |
+| Business database | MySQL (Homebrew), SQLAlchemy 2.x + PyMySQL; unit tests use in-memory SQLite |
+| Vector store | Chroma (local, persistent, cosine distance) |
+| Conversation memory | LangGraph SQLite checkpointer |
+| Interfaces | FastAPI + SSE + a plain HTML/JS single page; plus a CLI |
+| Observability | LangSmith, switched on by environment variables only |
 
-## 3. 对话主图
+## 3. Conversation graph
 
 ```
-START ─┬─(等待验证码 且 输入为 6 位数字)──▶ otp_gate ──▶ agent / END
-       ├─(退货流程进行中)────────────────▶ returns_flow
-       └─(其他)──▶ [faq_match ∥ emotion] ──▶ decide
-                                              ├─ handoff      （要求人工 / 连续愤怒 / 多次答不上）
-                                              ├─ faq_answer   （FAQ 命中且用户不愤怒）
-                                              └─ agent ◀──▶ tools ──▶ returns_flow（start_return_request 触发）
-returns_flow ──(槽位齐全)──▶ returns_confirm（interrupt 确认）──▶ END
+START ─┬─(awaiting code AND reply is a 6-digit code)──▶ otp_gate ──▶ agent / END
+       ├─(return form in progress)────────────────────▶ returns_flow
+       └─(otherwise)──▶ [faq_match ∥ classify] ──▶ decide
+                                                   ├─ handoff      (asked for a human / repeated anger / repeated misses)
+                                                   ├─ faq_answer   (FAQ hit and customer not angry)
+                                                   └─ agent ◀──▶ tools ──▶ returns_flow (via start_return_request)
+returns_flow ──(all slots filled)──▶ returns_confirm (interrupt confirmation) ──▶ END
 ```
 
-- **otp_gate**：确定性校验验证码，不经过 LLM；验证码在历史消息中被替换为 `[verification code redacted]`。
-- **FAQ 分层匹配**：归一化精确匹配 → BM25 召回 + 词覆盖率校验 → Embedding 相似度兜底，每层有阈值；消息含订单号时跳过 FAQ，避免拦截业务办理请求。
-- **情绪**：每轮并行调用小模型输出 `calm | frustrated | angry` 与 `wants_human`，用于调整语气和触发转人工。
-- **agent**：工具调用 Agent，负责 RAG、业务查询 / 办理、闲聊安抚；缺参数时依靠工具 schema + System Prompt 追问。`parallel_tool_calls=False`，保证一次最多一个待确认操作。
-- **退货退款子图**：显式槽位状态机：订单 → 商品 → 原因 → 退款方式 → `interrupt` 确认 → 生成退货单。用户离题或放弃时退出流程。
+- **otp_gate**: verifies the code deterministically, without the LLM. The customer's message is replaced in the history with `[verification code entered - verified successfully]` (or `- verification failed`), so the code never reaches the model.
+- **Layered FAQ matching**: normalized exact match → BM25 shortlist + two-way token coverage → embedding similarity, each with its own threshold. Messages containing order numbers, personal context ("my order") or action requests ("I want to…") skip the FAQ so they reach the agent.
+- **Per-turn signals (classify)**: a parallel call to `qwen-flash` returns the emotion (`calm | frustrated | angry`), `wants_human` and `needs_knowledge`. They set the reply tone and trigger the hand-off.
+- **Forced tool calls**: when `needs_knowledge` is true, the turn's first model call is forced to `search_knowledge_base` via `tool_choice`. When an unverified customer sends a phone number, it is forced to `send_verification_code`. With prompting alone, the real model sometimes answered product questions from its own (wrong) knowledge and skipped verification.
+- **agent**: a tool-calling agent for RAG, account queries and actions, and small talk. Missing details are asked for based on the tool schemas and the system prompt. Tool calls are kept to one per turn when a confirmation is involved (`parallel_tool_calls=False` on Qwen, plus a guard for providers that ignore it), so there is at most one pending confirmation.
+- **Return & refund flow**: an explicit slot-filling state machine: order → items → reason → refund method → `interrupt` confirmation → return created. Details the customer gave before the form opened ("the charger, it stopped working") are pre-filled. The flow exits if the customer changes topic or gives up.
 
-## 4. 认证
+## 4. Authentication
 
-- 网页登录面板（手机号 + 模拟短信验证码，dev 固定码 `123456`）→ JWT（HS256，24h）。
-- 对话内：`send_verification_code` 工具发码 → `otp_gate` 校验 → 通过 SSE `auth` 事件下发同样的 JWT。
-- 验证码 5 分钟有效、单码最多 5 次尝试、同号 60 秒限发。
-- FAQ / RAG / 闲聊免认证；所有个人数据操作需认证。工具只从会话状态读取 `user_id`，不接受 LLM 传入的用户标识。
-- 线程认证后绑定该用户；携带其他用户 Token 访问时拒绝；登出即开新线程。
-- 不做“绑定账号”。
+- Web sign-in panel: phone number + simulated SMS code (fixed `123456` in dev mode) → JWT (HS256, 24 h).
+- In chat: the `send_verification_code` tool sends a code → `otp_gate` checks it → the same JWT is delivered to the browser through an SSE `auth` event.
+- Codes are valid for 5 minutes, allow at most 5 attempts, and a number can request a new code at most every 60 seconds while its previous code is still usable. If a resend is throttled, the earlier code stays valid and the conversation waits for it.
+- FAQ, RAG and small talk need no verification; everything involving personal data does. Tools read `user_id` only from the conversation state, never from model-generated arguments.
+- Once verified, a conversation thread is bound to that customer; requests with another customer's token are rejected. Signing out starts a new thread.
+- Account linking (e.g. third-party accounts) is out of scope.
 
-## 5. 业务规则（Mock，存 MySQL）
+## 5. Business rules (mock data in MySQL)
 
-| 能力 | 规则 | 确认 |
+| Capability | Rule | Confirmation |
 |---|---|---|
-| 查询订单 / 物流 / 余额 / 退款进度 / 预约 | 只读 | 否 |
-| 取消订单 | 仅 `pending_payment` / `paid`；已付款自动原路退款（余额支付即时到账） | 是 |
-| 修改收货地址 | 仅发货前 | 是 |
-| 退货退款 | 签收后 7 天内；子图办理；退款方式：原路 / 账户余额 | 是 |
-| 预约 / 取消服务 | 维修、上门安装；模拟时段 | 是 |
-| 重置密码 | 需认证；向绑定手机发送重置链接（模拟），Agent 不接触密码 | 否 |
-| 转人工 | 生成模拟工单号 | 否 |
+| Query orders / tracking / balance / refund status / appointments | Read-only | No |
+| Cancel order | Only `pending_payment` / `paid`; paid orders are refunded to the original payment method (balance payments refund instantly) | Yes |
+| Change shipping address | Only before shipment | Yes |
+| Return & refund | Within 7 days of delivery; handled by the return flow; refund to the original payment method or store balance | Yes |
+| Book / cancel service appointment | Repair or home installation; simulated time slots | Yes |
+| Password reset | Verification required; a reset link is sent to the phone on file (simulated); the agent never handles passwords | No |
+| Hand-off to a human | Creates a simulated ticket number | No |
 
-订单状态：`pending_payment → paid → shipped → delivered`，另有 `cancelled`、`return_requested`、`refunded`。种子数据：3 个客户，每人 4–6 个订单，覆盖全部状态；日期相对初始化时刻生成，`cs-agent reset-db` 可重置。
+Order statuses: `pending_payment → paid → shipped → delivered`, plus `cancelled`, `return_requested` and `refunded`. Seed data: 3 customers with 4–6 orders each, covering every status. Dates are relative to when the database is seeded; `cs-agent reset-db` re-seeds.
 
 ## 6. RAG
 
-- 文档目录 `data/docs/`，支持 PDF / Markdown / TXT。
-- `cs-agent ingest` 或 `POST /api/admin/reindex`：按文件 SHA-256 增量入库，删除文件同步删除向量。
-- 检索：向量召回 top-k（相关度阈值）→ 可选 DashScope rerank → top-n 片段。
-- 回答必须附引用（文件名 + 页码 / 小节），前端展示来源；检索不到时明确说明并建议转人工。
+- Documents live in `data/docs/`: PDF, Markdown and TXT.
+- `cs-agent ingest` or `POST /api/admin/reindex` index incrementally by file SHA-256; deleting a file removes its vectors. The server also syncs on startup.
+- Retrieval: vector top-k with a relevance threshold → optional DashScope rerank → top-n passages.
+- Answers must cite their sources (file name + page or section), and the UI shows them. If nothing relevant is found, the agent says it couldn't find the information in the documentation (rather than claiming the product lacks the feature) and offers a human.
 
-## 7. 测试
+### Calibrated thresholds
 
-- pytest 单元测试：服务层规则、认证、FAQ、入库、对话图（脚本化假模型，覆盖 interrupt / 退货子图 / 转人工），不调用真实 LLM。
-- `scripts/e2e_conversations.py`：调用真实 LLM 的脚本化对话，手动运行。
+Measured with `text-embedding-v4` and `gte-rerank-v2` on the sample documents:
+
+| Setting | Value | Why |
+|---|---|---|
+| `rag_min_relevance` | 0.35 | Product questions score ≥ 0.56; off-topic questions ≈ 0.15 |
+| `rag_min_rerank_score` | 0.2 | Answerable questions rerank ≥ 0.67; an unanswerable one tops out at 0.19 and should count as a miss |
+| `faq_embedding_threshold` | 0.70 | Correct paraphrases score 0.63–0.75 while a wrong match already reaches 0.60; a wrong canned answer is worse than letting the agent answer |
+
+## 7. Testing
+
+- pytest unit tests cover service rules, authentication, FAQ matching, ingestion and the conversation graph. The graph tests use a scripted fake model that streams like a real provider, and cover interrupts, the return flow and hand-offs. No real LLM is called.
+- `scripts/e2e_conversations.py` runs scripted conversations against the real LLM; run it manually and read the transcripts.

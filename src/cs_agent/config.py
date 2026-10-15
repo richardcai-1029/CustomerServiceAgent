@@ -56,11 +56,11 @@ class Settings(BaseSettings):
     rag_fetch_k: int = 8
     rag_top_n: int = 4
     rag_min_relevance: float = 0.35
-    rag_min_rerank_score: float = 0.1
+    rag_min_rerank_score: float = 0.2
 
     # --- FAQ matching ---
     faq_token_coverage: float = 0.75
-    faq_embedding_threshold: float = 0.82
+    faq_embedding_threshold: float = 0.70
 
     # --- Human handoff ---
     handoff_angry_streak: int = 2
@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     def emotion_model_name(self) -> str:
         if self.emotion_model:
             return self.emotion_model
-        return "qwen-turbo" if self.llm_provider == "qwen" else "deepseek-chat"
+        return "qwen-flash" if self.llm_provider == "qwen" else "deepseek-chat"
 
     @property
     def checkpoint_path(self) -> Path:

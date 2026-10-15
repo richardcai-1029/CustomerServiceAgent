@@ -1,28 +1,28 @@
-# NovaTech 智能客服 Agent
+# NovaTech Customer Service Agent
 
-基于 **LangChain v1 + LangGraph** 的智能客服 Agent，服务于虚构数码电商 NovaTech Store。对话、知识库与代码注释均为英文。设计决策见 [DESIGN.md](DESIGN.md)。
+A customer service agent built on **LangChain v1 + LangGraph** for NovaTech Store, a fictional consumer-electronics retailer. Conversations, the knowledge base and code comments are in English. Design decisions are recorded in [DESIGN.md](DESIGN.md).
 
-## 能力一览
+## Features
 
-| 需求 | 实现 |
+| Requirement | Implementation |
 |---|---|
-| FAQ 秒级响应 | `knowledge/faq.py`：精确 → BM25+词覆盖 → Embedding 三层匹配，命中不调用 LLM |
-| 多轮意图澄清 | 工具 schema + System Prompt 追问；退货走显式槽位状态机 `agent/returns_flow.py` |
-| 文档问答 (RAG) | `knowledge/ingest.py` 增量入库 PDF/MD/TXT → Chroma；`retriever.py` 召回 + DashScope rerank；回答带引用 |
-| 闲聊与情绪安抚 | 每轮并行情绪分类（`qwen-turbo`），调整语气；连续愤怒 / 明确要求 / 多次答不上 → 转人工工单 |
-| 身份认证 | 短信验证码（模拟）+ JWT；对话内验证由确定性节点校验，验证码不进入 LLM 上下文 |
-| 业务查询 | 订单、物流、余额、退款进度、预约（MySQL） |
-| 业务代办 | 取消订单、改地址、退货退款、预约/取消服务、重置密码；写操作经 `interrupt()` 用户确认 |
+| Instant FAQ answers | `knowledge/faq.py`: three matching layers (exact → BM25 + token coverage → embeddings); a hit is answered without calling the LLM |
+| Multi-turn clarification | Tool schemas + system prompt drive follow-up questions; returns use an explicit slot-filling state machine in `agent/returns_flow.py` |
+| Document Q&A (RAG) | `knowledge/ingest.py` incrementally indexes PDF/MD/TXT into Chroma; `retriever.py` does vector recall + DashScope rerank; answers cite their sources. Product questions force a knowledge-base search, so the model cannot answer from memory |
+| Small talk & empathy | A per-turn classifier (`qwen-flash`) detects emotion and adapts the tone; repeated anger, an explicit request, or repeated unanswerable questions → hand-off ticket for a human agent |
+| Authentication | Simulated SMS codes + JWT; in-chat codes are checked by a deterministic graph node and never reach the LLM context |
+| Account queries | Orders, tracking, balance, refund status, appointments (MySQL) |
+| Account actions | Cancel orders, change addresses, returns & refunds, book/cancel appointments, password reset; every write action pauses on `interrupt()` for the customer's confirmation |
 
-## 快速开始
+## Quick start
 
-前置：Python 3.12、[uv](https://docs.astral.sh/uv/)、MySQL（`brew install mysql && brew services start mysql`）。
+Prerequisites: Python 3.12, [uv](https://docs.astral.sh/uv/), MySQL (`brew install mysql && brew services start mysql`).
 
 ```bash
 cp .env.example .env
 ```
 
-在 `.env` 中填入 `DASHSCOPE_API_KEY`（DashScope 控制台获取）。然后：
+Set `DASHSCOPE_API_KEY` in `.env` (create one in the Alibaba Cloud Model Studio / DashScope console). Then:
 
 ```bash
 uv sync
@@ -40,49 +40,51 @@ uv run cs-agent init-db
 uv run cs-agent serve
 ```
 
-打开 http://127.0.0.1:8000 。首次启动会自动把 `data/docs/` 入库（之后只处理新增或修改的文件）。
+Open http://127.0.0.1:8000. On startup the server syncs `data/docs/` into the vector store; only new or changed files are embedded.
 
-其他命令：
+Other commands:
 
-| 命令 | 作用 |
+| Command | Purpose |
 |---|---|
-| `uv run cs-agent chat` | 终端对话（确认操作时输入 y/N） |
-| `uv run cs-agent ingest` | 手动增量同步知识库（也可 `POST /api/admin/reindex`） |
-| `uv run cs-agent reset-db` | 清空并重建演示数据（日期相对当前时间生成） |
-| `uv run pytest` | 单元测试（不调用 LLM，默认 SQLite） |
-| `TEST_DATABASE_URL=mysql+pymysql://root@127.0.0.1:3306/cs_agent_test uv run pytest` | 在 MySQL 上跑测试 |
-| `uv run python scripts/e2e_conversations.py [场景名]` | 调用真实 LLM 的脚本化对话（会重置演示库） |
+| `uv run cs-agent chat` | Chat in the terminal (answer y/N to confirmations) |
+| `uv run cs-agent ingest` | Sync the knowledge base manually (also `POST /api/admin/reindex`) |
+| `uv run cs-agent reset-db` | Drop and re-seed the demo data (dates are relative to now) |
+| `uv run pytest` | Unit tests (no LLM calls, in-memory SQLite by default) |
+| `TEST_DATABASE_URL=mysql+pymysql://root@127.0.0.1:3306/cs_agent_test uv run pytest` | Run the tests against MySQL |
+| `uv run python scripts/e2e_conversations.py [scenario ...]` | Scripted conversations with the real LLM (resets the demo database) |
 
-切换到 DeepSeek：`.env` 中设置 `LLM_PROVIDER=deepseek` 和 `DEEPSEEK_API_KEY`（Embedding/Rerank 仍使用 DashScope）。
+To use DeepSeek for chat, set `LLM_PROVIDER=deepseek` and `DEEPSEEK_API_KEY` in `.env`. Embeddings and rerank still use DashScope.
 
-## 演示账号（dev 模式验证码固定为 `123456`）
+## Demo accounts
 
-| 客户 | 手机号 | 适合演示 |
+In dev mode the SMS code is always `123456`. Only these seeded phone numbers have accounts; any other number receives a code but cannot sign in.
+
+| Customer | Phone | Good for demonstrating |
 |---|---|---|
-| Alice Chen | 4155550101 | 退货（ORD-1001 在退货期内）、取消/改地址（ORD-1002 已付款未发货）、物流（ORD-1003）、已完成退款（ORD-1005） |
-| Ben Wright | 4155550102 | 待付款订单、部分退货（ORD-2002）、退货中（ORD-2004）、取消退款记录 |
-| Carla Diaz | 4155550103 | 余额支付订单取消即时到账（ORD-3003）、已有维修预约（APT-C3004） |
+| Alice Chen | 4155550101 | Returns (ORD-1001 is inside the return window), cancel / change address (ORD-1002 is paid, not shipped), tracking (ORD-1003), a completed refund (ORD-1005) |
+| Ben Wright | 4155550102 | An unpaid order, partial returns (ORD-2002), a return in progress (ORD-2004), a cancellation refund |
+| Carla Diaz | 4155550103 | Cancelling a balance-paid order refunds instantly (ORD-3003), an existing repair appointment (APT-C3004) |
 
-可以试试：
+Things to try:
 
-- "What's your return policy?"：FAQ 快速通道，回复带 *Instant answer* 标记
-- "My Aurora X2 only plays in one ear, what should I do?"：RAG 回答，附 PDF 页码引用
-- "Where is my order?"：引导验证 → 查订单 → 追问是哪一单
-- "I want to return my headphones"：进入退货表单，最后弹出确认卡片
-- "I'd like to talk to a person"：转人工，生成工单号
+- "What's your return policy?": FAQ fast path, marked *Instant answer*
+- "My Aurora X2 only plays in one ear, what should I do?": RAG answer citing PDF pages
+- "Where is my order?": verification → order lookup → asks which order
+- "I want to return my headphones": opens the guided return form, ending in a confirmation card
+- "I'd like to talk to a person": hand-off to a human with a ticket number
 
-## 项目结构
+## Project layout
 
 ```
 src/cs_agent/
-  agent/        graph.py（主图）· tools.py · returns_flow.py · classifiers.py · prompts.py · events.py（SSE 事件）
+  agent/        graph.py (main graph) · tools.py · returns_flow.py · classifiers.py · prompts.py · events.py (SSE events)
   knowledge/    faq.py · ingest.py · retriever.py
-  services/     订单 / 退货 / 账户 / 预约 / 转人工 业务规则
-  auth/         otp.py（验证码）· tokens.py（JWT）
+  services/     business rules: orders / returns / accounts / appointments / hand-off
+  auth/         otp.py (SMS codes) · tokens.py (JWT)
   db/           models.py · seed.py · session.py
-  api/          app.py（FastAPI + SSE）· static/（网页）
+  api/          app.py (FastAPI + SSE) · static/ (web UI)
   cli.py · runtime.py · llm.py · config.py
-data/           faq.yaml · docs/（知识库源文件）· runtime/（Chroma、会话 checkpoint，已 gitignore）
+data/           faq.yaml · docs/ (knowledge-base sources) · runtime/ (Chroma, conversation checkpoints; git-ignored)
 scripts/        make_sample_pdfs.py · e2e_conversations.py
-tests/          服务层 / 认证 / 知识库 / 对话图 / API
+tests/          services / auth / knowledge / graph / API
 ```

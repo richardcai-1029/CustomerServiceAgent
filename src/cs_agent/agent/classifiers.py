@@ -1,4 +1,4 @@
-"""Small structured-output LLM helpers: emotion detection and return-form extraction."""
+"""Small structured-output LLM helpers: per-turn signals and return-form extraction."""
 
 import json
 import logging
@@ -8,7 +8,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AnyMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel
 
-from cs_agent.agent.prompts import EMOTION_SYSTEM, RETURN_SLOTS_SYSTEM
+from cs_agent.agent.prompts import RETURN_SLOTS_SYSTEM, TURN_SIGNALS_SYSTEM
 
 log = logging.getLogger(__name__)
 
@@ -16,9 +16,11 @@ log = logging.getLogger(__name__)
 INTERNAL_TAG = "internal"
 
 
-class EmotionResult(BaseModel):
+class TurnSignals(BaseModel):
     emotion: Literal["calm", "frustrated", "angry"] = "calm"
     wants_human: bool = False
+    # The question needs product/policy facts, so the agent must search first.
+    needs_knowledge: bool = False
 
 
 class ReturnSlots(BaseModel):
@@ -40,19 +42,19 @@ def _transcript(messages: list[AnyMessage], limit: int = 6) -> str:
     return "\n".join(lines)
 
 
-def make_emotion_classifier(model: BaseChatModel):
-    structured = model.with_structured_output(EmotionResult, method="json_mode").with_config(
+def make_turn_classifier(model: BaseChatModel):
+    structured = model.with_structured_output(TurnSignals, method="json_mode").with_config(
         tags=[INTERNAL_TAG]
     )
 
-    def classify(messages: list[AnyMessage]) -> EmotionResult:
+    def classify(messages: list[AnyMessage]) -> TurnSignals:
         try:
             return structured.invoke(
-                [SystemMessage(EMOTION_SYSTEM), HumanMessage(_transcript(messages))]
+                [SystemMessage(TURN_SIGNALS_SYSTEM), HumanMessage(_transcript(messages))]
             )
         except Exception:
-            log.exception("Emotion classification failed; assuming calm")
-            return EmotionResult()
+            log.exception("Turn classification failed; using defaults")
+            return TurnSignals()
 
     return classify
 

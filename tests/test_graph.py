@@ -4,7 +4,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from cs_agent.agent.classifiers import EmotionResult, ReturnSlots
+from cs_agent.agent.classifiers import TurnSignals, ReturnSlots
 from cs_agent.agent.graph import build_graph
 from cs_agent.db.models import HandoffTicket, Order, OrderStatus, ReturnRequest
 from cs_agent.knowledge.retriever import Passage
@@ -164,8 +164,9 @@ def test_guided_return_flow(settings, session_factory):
         rma = s.query(ReturnRequest).filter_by(order_id="ORD-1001").one()
         assert rma.reason == "defective" and rma.refund_method == "balance"
     # The extractor saw what was being asked each time.
-    assert [c[0] for c in deps.slot_calls] == ["reason", "which item(s) to return",
-                                               "the refund method"]
+    assert [c[0] for c in deps.slot_calls] == ["details mentioned before the form opened",
+                                               "which item(s) to return", "the refund method"]
+    assert deps.slot_calls[0][2] == "reason: they're broken"
 
 
 def test_return_flow_can_be_abandoned(settings, session_factory):
@@ -183,7 +184,7 @@ def test_return_flow_can_be_abandoned(settings, session_factory):
 
 def test_explicit_request_for_human(settings, session_factory):
     deps, model = make_deps(settings, session_factory,
-                            emotions=[EmotionResult(wants_human=True)])
+                            emotions=[TurnSignals(wants_human=True)])
     state = Chat(deps).send("Let me talk to a real person")
     assert state["handoff_ticket"].startswith("TCK-")
     assert model.calls == []
@@ -192,7 +193,7 @@ def test_explicit_request_for_human(settings, session_factory):
 
 
 def test_repeated_anger_triggers_handoff(settings, session_factory):
-    angry = EmotionResult(emotion="angry")
+    angry = TurnSignals(emotion="angry")
     deps, _ = make_deps(settings, session_factory, emotions=[angry, angry],
                         script=[AIMessage("I'm so sorry. Let me fix this right away.")])
     chat = Chat(deps)
@@ -228,3 +229,52 @@ def test_knowledge_answer_carries_sources(settings, session_factory):
     assert tool_message.artifact["sources"][0]["citation"] == "aurora-x2-headphones-manual.pdf, page 4"
     assert "[1] (source: aurora-x2-headphones-manual.pdf, page 4)" in tool_message.text
     assert state["unresolved_count"] == 0
+
+
+def test_forced_tool_rules():
+    from cs_agent.agent.graph import forced_tool
+
+    def state(text, **extra):
+        return {"messages": [HumanMessage(text)], **extra}
+
+    assert forced_tool(state("415-555-0101")) == "send_verification_code"
+    assert forced_tool(state("My phone is (415) 555 0102")) == "send_verification_code"
+    # Verified customers giving a (recipient) phone number are not re-verified.
+    assert forced_tool(state("4155550101", user_id=1)) is None
+    assert forced_tool(state("battery life?", needs_knowledge=True)) == "search_knowledge_base"
+    assert forced_tool(state("thanks!", needs_knowledge=False)) is None
+    # Only the first model call of a turn is forced.
+    after_tool = {"messages": [HumanMessage("battery?"), AIMessage("", tool_calls=[])],
+                  "needs_knowledge": True}
+    assert forced_tool(after_tool) is None
+
+
+def test_return_form_uses_details_given_before_it_opened(settings, session_factory):
+    with session_factory() as s:
+        charger = next(i.id for i in s.get(Order, "ORD-2002").items if i.sku == "USBC-65W")
+    deps, _ = make_deps(
+        settings, session_factory,
+        script=[call("start_return_request", item_description="the charger",
+                     reason="stopped working")],
+        slots=[ReturnSlots(item_ids=[charger], reason="defective")],
+    )
+    state = Chat(deps).send("Return the charger, it stopped working", user_id=2,
+                            user_name="Ben Wright")
+    # Order picked automatically, item and reason pre-filled: straight to the refund method.
+    assert "How would you like to be refunded" in reply(state)
+    assert deps.slot_calls[0][2] == "items: the charger; reason: stopped working"
+
+
+def test_resend_too_soon_still_waits_for_the_earlier_code(settings, session_factory):
+    deps, _ = make_deps(settings, session_factory, script=[
+        call("send_verification_code", phone="4155550101"),
+        AIMessage("Code sent."),
+        call("send_verification_code", phone="4155550101"),
+        AIMessage("Please use the code I sent a moment ago."),
+        AIMessage("Thanks, you're verified!"),
+    ])
+    first, second = Chat(deps), Chat(deps)
+    first.send("4155550101")
+    second.send("4155550101")  # another thread, same phone, within 60 s
+    assert second.state["pending_phone"] == "4155550101"
+    assert second.send("123456")["user_id"] == 1

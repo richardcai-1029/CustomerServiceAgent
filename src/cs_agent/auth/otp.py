@@ -17,6 +17,14 @@ from cs_agent.services.common import RuleViolation, mask_phone, normalize_phone,
 log = logging.getLogger(__name__)
 
 
+class ResendTooSoon(RuleViolation):
+    """A code was sent moments ago; it is still valid, so the caller can wait for it."""
+
+    def __init__(self, phone: str, wait: int):
+        super().__init__(f"A code was sent recently. Please wait {wait} seconds before requesting another.")
+        self.phone = phone
+
+
 @dataclass
 class VerifyResult:
     ok: bool
@@ -51,10 +59,12 @@ def send_code(session: Session, settings: Settings, phone: str) -> dict:
 
     latest = _latest(session, phone)
     t = now()
-    if latest is not None:
+    # Throttle only while the previous code is still usable; after it was used or has
+    # expired, a fresh code may be sent right away.
+    if latest is not None and not latest.consumed and t < latest.expires_at:
         wait = settings.otp_resend_seconds - int((t - latest.created_at).total_seconds())
         if wait > 0:
-            raise RuleViolation(f"A code was sent recently. Please wait {wait} seconds before requesting another.")
+            raise ResendTooSoon(phone, wait)
 
     code = settings.dev_otp_code if settings.dev_mode else f"{secrets.randbelow(10**6):06d}"
     session.add(VerificationCode(phone=phone, code_hash=_hash(phone, code), created_at=t,
